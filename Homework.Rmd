@@ -1,0 +1,306 @@
+---
+title: "Homework - DSSC Core Course"
+author: "Aleksandra Greshnova"
+header-includes:
+   - \usepackage{bbm}
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Homework2
+
+```{r}
+
+setwd("C:/Users/sasha")
+
+#read data
+data <- read.delim('trace1.txt')
+
+#create dataframe with two columns - value and time
+data$time <- seq(from = 0, to = 100, length.out = 1999999)
+names(data) <- c('value', 'time')
+
+#upload libraries
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(zoo)
+
+#create dataframe with intervals
+interval_point <- seq(from = min(data$value), to = max(data$value), 
+    by = (max(data$value)-min(data$value))/100)
+
+intervals <- as.data.frame(matrix(0, ncol = 2, nrow = 100))
+
+for (i in (1:(length(interval_point)-1))){
+  intervals[i,1] <- interval_point[i]
+  intervals[i,2] <- interval_point[i+1]
+}
+
+colnames(intervals) <- c('lower', 'upper')
+
+head(intervals)
+
+#create dataframe for histogram
+data_cut <- cut(data$value, interval_point)
+data_freq <- data.frame(table(data_cut))
+data_freq <- select(data_freq, -data_cut)
+data_freq <- cbind(data_freq, intervals)
+data_freq$norm_freq <- data_freq$Freq/(sum(data_freq$Freq)*(data_freq$upper-data_freq$lower))
+
+#function for generation of samples and calculating their freqs
+sample_freq <- function(df){
+  sample <- sample(df$value, length(df$value)/2)
+  sample_cut <- cut(sample, interval_point)
+  sample_freq <- data.frame(table(sample_cut))
+  sample_freq$norm_freq <- sample_freq$Freq/(sum(sample_freq$Freq)*(data_freq$upper-data_freq$lower))
+  return(sample_freq$norm_freq)
+}
+
+#calculating upper and lower boarder of conf int
+samples <- replicate(n = 100, sample_freq(data), simplify = FALSE )
+samples_df <- as.data.frame(do.call(cbind, samples))
+data_freq <- cbind(data_freq, t(as.data.frame(apply(samples_df, 
+                                                    1, function(x) quantile(x, c(.025, .975))))))
+data_freq$middle <- data_freq$lower + (data_freq$upper - data_freq$lower)/2
+
+#subsetting data for graph
+data_for_graph <- select(data_freq, -c('Freq', 'lower', 'upper'))
+colnames(data_for_graph) <- c('norm_freq', 'lower', 'upper', 'middle')
+head(data_for_graph)
+
+#creating a plot
+plot <- ggplot()+
+  geom_line(data=data_for_graph, aes(x=middle, y=norm_freq))+
+  geom_point(data=data_for_graph, aes(x=middle, y=norm_freq), size=1)+
+  geom_errorbar(data=data_for_graph, aes(x=middle, ymin=lower, ymax=upper), color='red')+
+  scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x)))+
+  xlab("Voltage [microV]")+
+  ylab("P(V)")+
+  ggtitle('PDF')+
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot
+
+#subset 50000 entries
+data_2_5 <- data[1:50000,]
+
+#plot a subset (voltage vs time)
+plot_data_2_5 <- ggplot(data_2_5, aes(x=time, y=value))+
+  geom_line(color = "blue")+
+  geom_hline(yintercept=c(-30,-50), linetype="dashed", color = "red")+
+  xlab("Time [s]")+
+  ylab("Voltage [microV]")+
+  ggtitle("A 2.5s example trace - original data")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot_data_2_5
+
+#function which counts number of peaks under a certain threshold
+peaks_count <- function(d, t){
+  
+  d$id <- seq.int(nrow(d))
+  
+  d$difference <- c(0, diff(d$value))
+  
+  indexes <- which(d$difference < 0)
+  
+  d_descending <- d[indexes, ]
+  
+  d_descending_under_t <- d_descending[which(d_descending$value < t),]
+  
+  d_descending_under_t$diff_id <- c(diff(d_descending_under_t$id), 0)
+  
+  d_peaks <- d_descending_under_t[which(d_descending_under_t$diff_id > 1), ]
+  
+  return(length(d_peaks$value))
+}
+
+#scan a range of thresholds
+spikes_data <- data.frame(matrix(ncol = 2, nrow = 0))
+
+for(i in -30:-70){
+  spikes_data <- rbind(spikes_data, c(i, peaks_count(d=data_2_5, t=i)))
+}
+
+colnames(spikes_data) <- c('threshold', 'N of peaks')
+plot(spikes_data)
+
+#smooting_data
+data_smooth <- data[1:1999900,]
+data_smooth$value <- data_smooth$value - rollapply(data$value, width=100, FUN=mean)
+data_smooth_2_5 <- data_smooth[1:50000,]
+
+#plot a subset - smoothed data (voltage vs time)
+plot_data_smooth_2_5 <- ggplot(data_smooth_2_5, aes(x=time, y=value))+
+  geom_line(color = "blue")+
+  xlab("Time [s]")+
+  ylab("Voltage [microV]")+
+  ggtitle("A 2.5s example trace - smoothed data")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot_data_smooth_2_5
+
+#counting peaks in smoothed data
+spikes_sm_data <- data.frame(matrix(ncol = 2, nrow = 0))
+
+for(i in -30:-70){
+  spikes_sm_data <- rbind(spikes_sm_data, c(i, peaks_count(d=data_smooth_2_5, t=i)))
+}
+
+colnames(spikes_sm_data) <- c('threshold', 'N of peaks')
+
+plot(spikes_sm_data)
+
+#function which returns a coordinates of peaks
+peaks_call <- function(d, t){
+  
+  d$id <- seq.int(nrow(d))
+  
+  d$difference <- c(0, diff(d$value))
+  
+  indexes <- which(d$difference < 0)
+  
+  d_descending <- d[indexes, ]
+  
+  d_descending_under_t <- d_descending[which(d_descending$value < t),]
+  
+  d_descending_under_t$diff_id <- c(diff(d_descending_under_t$id), 0)
+  
+  d_peaks <- d_descending_under_t[which(d_descending_under_t$diff_id > 1), ]
+  
+  return(data.frame(value = d_peaks$value, time = d_peaks$time))
+}
+
+#peaks, threashold = -50 microV
+peaks_sm_data_2_5 <- peaks_call(d=data_smooth_2_5, t=-50)
+peaks_data_2_5 <- peaks_call(d=data_2_5, t=-50)
+
+#plotting data with peaks
+plot_data_2_5_peaks <- ggplot(data_2_5, aes(x=time, y=value))+
+  geom_line(color = "blue")+
+  geom_hline(yintercept=c(-50), linetype="dashed", color = "red")+
+  xlab("Time [s]")+
+  ylab("Voltage [microV]")+
+  ggtitle("A 2.5s example trace - smoothed data")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_point(data=peaks_data_2_5, aes(x=time, y=value), color='red')
+
+plot_data_2_5_peaks
+
+plot_data_sm_2_5_peaks <- ggplot(data_smooth_2_5, aes(x=time, y=value))+
+  geom_line(color = "blue")+
+  geom_hline(yintercept=c(-50), linetype="dashed", color = "red")+
+  xlab("Time [s]")+
+  ylab("Voltage [microV]")+
+  ggtitle("A 2.5s example trace - smoothed data")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_point(data=peaks_sm_data_2_5, aes(x=time, y=value), color='red')
+
+plot_data_sm_2_5_peaks
+
+#counting_peaks
+
+#function which returns an original df with peaks indicated
+peaks_call_original <- function(d, t){
+  
+  d$id <- seq.int(nrow(d))
+  
+  d$difference <- c(0, diff(d$value))
+  
+  indexes <- which(d$difference < 0)
+  
+  d_descending <- d[indexes, ]
+  
+  d_descending_under_t <- d_descending[which(d_descending$value < t),]
+  
+  d_descending_under_t$diff_id <- c(diff(d_descending_under_t$id), 0)
+  
+  d_peaks <- d_descending_under_t[which(d_descending_under_t$diff_id > 1), ]
+  
+  only_peaks <- data.frame(value = d_peaks$value, time = d_peaks$time)
+  
+  spikes <- merge.data.frame(only_peaks, data_smooth_2_5, by='time', all.x = T, all.y = T)
+  
+  colnames(spikes) <- c('time', 'peaks', 'signal')
+  
+  return(spikes)
+}
+
+spikes_in_original_data <- peaks_call_original(data_smooth_2_5, -50)
+colnames(spikes_in_original_data) <- c('time', 'true_spikes', 'original_signal')
+head(spikes_in_original_data)
+
+#function which retuen a df with coordinates of peaks
+peaks_call <- function(d, t){
+  
+  d$id <- seq.int(nrow(d))
+  
+  d$difference <- c(0, diff(d$value))
+  
+  indexes <- which(d$difference < 0)
+  
+  d_descending <- d[indexes, ]
+  
+  d_descending_under_t <- d_descending[which(d_descending$value < t),]
+  
+  d_descending_under_t$diff_id <- c(diff(d_descending_under_t$id), 0)
+  
+  d_peaks <- d_descending_under_t[which(d_descending_under_t$diff_id > 1), ]
+  
+  return(data.frame(value = d_peaks$value, time = d_peaks$time))
+}
+
+peaks <- peaks_call(data_2_5, -50)
+
+#creating df for ROC curve
+data_for_roc <- function(d_true, d_sample){
+  
+  result <- merge.data.frame(d_true, d_sample, by='time', all.x=T, all.y=T)
+  
+  results_peaks_subset <- result[-which(is.na(result$true_spikes)), ]
+  
+  TP <- nrow(results_peaks_subset[which(!is.na(results_peaks_subset$value)), ])
+  
+  FN <- nrow(results_peaks_subset) - TP
+  
+  results_no_peaks_subset <- result[which(is.na(result$true_spikes)), ]
+  
+  FP <- nrow(results_no_peaks_subset[which(!is.na(results_no_peaks_subset$value)), ])
+  TN <- nrow(results_no_peaks_subset) - FP
+  
+  return(c(TP, TN, FP, FN))
+  
+}
+
+ROC_data <- data.frame(matrix(ncol = 5, nrow = 0))
+
+for(i in seq(-30,-70,-1)){
+  
+  sample_peaks <- peaks_call(data_2_5, t=i)
+  peaks <- data_for_roc(d_true=spikes_in_original_data, d_sample=sample_peaks)
+  
+  ROC_data <- rbind(ROC_data, c(peaks, i))
+}
+
+colnames(ROC_data) <- c('TP', 'TN', 'FP', 'FN', 'threshold')
+
+head(ROC_data)
+
+ROC_data$TPR <- ROC_data$TP/(ROC_data$TP+ROC_data$FN)
+ROC_data$FPR <- ROC_data$FP/(ROC_data$FP+ROC_data$TN)
+
+ROC_curve <- ggplot(data=ROC_data, aes(x=FPR, y=TPR))+
+  geom_point(color='red')+
+  ggtitle('ROC curve')+
+  theme(plot.title = element_text(hjust = 0.5))
+
+ROC_curve
+
+```
